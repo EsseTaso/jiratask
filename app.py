@@ -21,7 +21,7 @@ def fetch_issues(jql, max_results=1000):
         "jql": jql,
         "maxResults": max_results,
         "fields": "summary,status,issuetype,parent,created,customfield_10011,customfield_10043"
-        # customfield_10011 = Epic Link, customfield_10043 = Öncelik alanı olabilir (ID sana göre değişebilir)
+        # customfield_10011 = Epic Link, customfield_10043 = Öncelik alanı olabilir (sende farklı olabilir)
     }
     response = requests.get(url, headers=headers, auth=auth, params=params)
     if response.status_code == 200:
@@ -35,7 +35,7 @@ st.set_page_config(page_title="Jira Vulnerability Dashboard", layout="wide")
 st.title("🔐 Vulnerability Management Dashboard")
 
 with st.spinner("Jira'dan veri alınıyor..."):
-    data = fetch_issues('project = "Vulnerability Management" ORDER BY created DESC')
+    data = fetch_issues('project = VM ORDER BY created DESC')  # ← doğru proje key burada
 
 # --- Veri işleme ---
 issues = data.get("issues", [])
@@ -50,11 +50,17 @@ for issue in issues:
         "Parent": fields["parent"]["key"] if "parent" in fields else "",
         "Epic Link": fields.get("customfield_10011", ""),
         "Created": fields["created"][:10],
-        "Oncelik": fields.get("customfield_10043", "Bilinmiyor")  # Öncelik alanı, Jira'da ID'si farklıysa düzelt
+        "Oncelik": fields.get("customfield_10043", "Bilinmiyor")  # field ID doğruysa çalışır
     })
 
 df = pd.DataFrame(rows)
-df["Created"] = pd.to_datetime(df["Created"])
+
+# --- Boş veri kontrolü ---
+if not df.empty:
+    df["Created"] = pd.to_datetime(df["Created"])
+else:
+    st.warning("Hiçbir kayıt bulunamadı. Lütfen proje key'inizi ve filtreleri kontrol edin.")
+    st.stop()
 
 # --- Filtreleme Paneli ---
 st.sidebar.header("🔎 Filtreleme")
