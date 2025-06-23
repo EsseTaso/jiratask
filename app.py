@@ -5,7 +5,7 @@ from requests.auth import HTTPBasicAuth
 from datetime import datetime
 from io import BytesIO
 
-# --- Streamlit Secrets üzerinden Jira erişimi ---
+# --- Secrets (Streamlit Cloud'dan okunur) ---
 EMAIL = st.secrets["JIRA_EMAIL"]
 API_TOKEN = st.secrets["JIRA_API_TOKEN"]
 DOMAIN = st.secrets["JIRA_DOMAIN"]
@@ -13,7 +13,7 @@ DOMAIN = st.secrets["JIRA_DOMAIN"]
 auth = HTTPBasicAuth(EMAIL, API_TOKEN)
 headers = {"Accept": "application/json"}
 
-# --- Jira'dan veri çekme ---
+# --- Jira veri çekme ---
 @st.cache_data
 def fetch_issues(jql, max_results=1000):
     url = f"{DOMAIN}/rest/api/3/search"
@@ -29,14 +29,14 @@ def fetch_issues(jql, max_results=1000):
         st.error(f"Hata: {response.status_code} - {response.text}")
         return {}
 
-# --- Başlık ve genel ayar ---
+# --- Uygulama başlığı ---
 st.set_page_config(page_title="Jira Vulnerability Dashboard", layout="wide")
 st.title("🔐 Vulnerability Management Dashboard")
 
-with st.spinner("Jira'dan veri alınıyor..."):
+with st.spinner("Jira'dan veri çekiliyor..."):
     data = fetch_issues('project = VM ORDER BY created DESC')
 
-# --- Veri işleme ---
+# --- Veriyi işle ---
 issues = data.get("issues", [])
 rows = []
 for issue in issues:
@@ -52,19 +52,29 @@ for issue in issues:
         "Oncelik": fields.get("customfield_10043", "Bilinmiyor")
     })
 
+# --- Subtask'lara Epic bilgisi ata (Parent üzerinden) ---
+epic_map = {r["Key"]: r["Epic Link"] for r in rows if r["Issue Type"] != "Sub-task"}
+for r in rows:
+    if r["Issue Type"] == "Sub-task" and r["Parent"] in epic_map:
+        r["Epic Link"] = epic_map[r["Parent"]]
+
 df = pd.DataFrame(rows)
 
-if not df.empty:
-    df["Created"] = pd.to_datetime(df["Created"])
-else:
-    st.warning("Hiçbir kayıt bulunamadı. Lütfen proje key'inizi ve filtreleri kontrol edin.")
+# --- Boş kontrolü ---
+if df.empty:
+    st.warning("Veri çekilemedi.")
     st.stop()
+else:
+    df["Created"] = pd.to_datetime(df["Created"])
 
-# --- Filtreleme paneli ---
+# --- FİLTRE PANELİ ---
 st.sidebar.header("🔎 Filtreleme")
+
 issue_types = st.sidebar.multiselect("Issue Type", df["Issue Type"].unique(), default=list(df["Issue Type"].unique()))
 status_filter = st.sidebar.multiselect("Status", df["Status"].unique(), default=list(df["Status"].unique()))
 oncelik_filter = st.sidebar.multiselect("Öncelik", df["Oncelik"].unique(), default=list(df["Oncelik"].unique()))
+epic_list = sorted(df["Epic Link"].dropna().unique())
+selected_epics = st.sidebar.multiselect("Epic Seçimi", epic_list, default=epic_list)
 show_only_subtasks = st.sidebar.checkbox("Sadece Subtask'ları Göster", value=False)
 
 min_date, max_date = df["Created"].min(), df["Created"].max()
@@ -75,19 +85,19 @@ filtered_df = df[
     (df["Issue Type"].isin(issue_types)) &
     (df["Status"].isin(status_filter)) &
     (df["Oncelik"].isin(oncelik_filter)) &
+    (df["Epic Link"].isin(selected_epics)) &
     (df["Created"] >= pd.to_datetime(date_range[0])) &
     (df["Created"] <= pd.to_datetime(date_range[1]))
 ]
 
-# --- Subtask filtresi ---
 if show_only_subtasks:
     filtered_df = filtered_df[filtered_df["Parent"] != ""]
 
-# --- Detaylı tablo ---
-st.subheader("📋 Detaylı Tablo")
+# --- TABLO ---
+st.subheader("📋 Filtrelenmiş Issue Tablosu")
 st.dataframe(filtered_df, use_container_width=True)
 
-# --- Grafikler ---
+# --- GRAFİKLER ---
 st.subheader("📊 Durumlara Göre Dağılım")
 st.bar_chart(filtered_df["Status"].value_counts())
 
@@ -97,9 +107,9 @@ st.bar_chart(filtered_df["Issue Type"].value_counts())
 st.subheader("📊 Öncelik Dağılımı")
 st.bar_chart(filtered_df["Oncelik"].value_counts())
 
-# --- Epic bazlı ilerleme yüzdesi ---
+# --- EPIC BAZLI İLERLEME ---
 st.subheader("📈 Epic Bazlı İlerleme Yüzdesi")
-epic_issues = filtered_df[filtered_df["Epic Link"] != ""]
+epic_issues = filtered_df[filtered_df["Epic Link"].notna() & (filtered_df["Epic Link"] != "")]
 
 epic_summary = epic_issues.groupby("Epic Link").agg(
     total_issues=("Key", "count"),
@@ -117,7 +127,7 @@ epic_summary["Progress (%)"] = epic_summary.apply(
 st.dataframe(epic_summary, use_container_width=True)
 st.bar_chart(epic_summary.set_index("Epic Link")["Progress (%)"])
 
-# --- Excel dışa aktarım (fixlenmiş) ---
+# --- EXCEL EXPORT ---
 def convert_df_to_excel(df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
