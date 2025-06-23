@@ -5,7 +5,7 @@ from requests.auth import HTTPBasicAuth
 from datetime import datetime
 from io import BytesIO
 
-# --- Streamlit Secrets üzerinden erişim ---
+# --- Jira API secrets ---
 EMAIL = st.secrets["JIRA_EMAIL"]
 API_TOKEN = st.secrets["JIRA_API_TOKEN"]
 DOMAIN = st.secrets["JIRA_DOMAIN"]
@@ -13,7 +13,6 @@ DOMAIN = st.secrets["JIRA_DOMAIN"]
 auth = HTTPBasicAuth(EMAIL, API_TOKEN)
 headers = {"Accept": "application/json"}
 
-# --- Jira'dan veri çekme ---
 @st.cache_data
 def fetch_issues(jql, max_results=1000):
     url = f"{DOMAIN}/rest/api/3/search"
@@ -23,20 +22,16 @@ def fetch_issues(jql, max_results=1000):
         "fields": "summary,status,issuetype,parent,created,customfield_10011,customfield_10043"
     }
     response = requests.get(url, headers=headers, auth=auth, params=params)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        st.error(f"Hata: {response.status_code} - {response.text}")
-        return {}
+    return response.json() if response.status_code == 200 else {}
 
-# --- Başlat ---
+# Başlat
 st.set_page_config(page_title="Jira Vulnerability Dashboard", layout="wide")
 st.title("🔐 Jira Vulnerability Dashboard")
 
 with st.spinner("Veri çekiliyor..."):
     data = fetch_issues('project = VM ORDER BY created DESC')
 
-# --- Veriyi işle ---
+# Veri işleme
 issues = data.get("issues", [])
 rows = []
 for issue in issues:
@@ -52,7 +47,7 @@ for issue in issues:
         "Oncelik": fields.get("customfield_10043", "Bilinmiyor")
     })
 
-# --- Subtask'lara Epic Link ata ---
+# Subtask'lara Epic Link ekle
 epic_map = {r["Key"]: [] for r in rows if r["Issue Type"] == "Epic"}
 task_map = {}
 subtask_map = {}
@@ -65,20 +60,17 @@ for r in rows:
     elif r["Issue Type"] == "Sub-task" and r["Parent"]:
         subtask_map.setdefault(r["Parent"], []).append(r)
 
-# Subtask'lara Epic Link bağla
 for r in rows:
     if r["Issue Type"] == "Sub-task" and r["Parent"] in task_map:
         r["Epic Link"] = task_map[r["Parent"]]["Epic Link"]
 
 df = pd.DataFrame(rows)
-
 if df.empty:
-    st.warning("Veri bulunamadı.")
+    st.warning("Veri çekilemedi.")
     st.stop()
-else:
-    df["Created"] = pd.to_datetime(df["Created"])
+df["Created"] = pd.to_datetime(df["Created"])
 
-# --- Hiyerarşik Filtreleme: Epic → Task → Subtask ---
+# --- Hiyerarşik Filtreleme ---
 st.sidebar.header("🧩 Epic → Task → Subtask Filtresi")
 
 epic_keys = sorted([e for e in epic_map if e])
@@ -99,15 +91,13 @@ oncelik_filter = st.sidebar.multiselect("Öncelik", df["Oncelik"].unique(), defa
 min_date, max_date = df["Created"].min(), df["Created"].max()
 date_range = st.sidebar.date_input("Tarih Aralığı", (min_date, max_date))
 
-# --- Filtreleri uygula ---
+# --- Filtre Uygula ---
 filtered_df = df.copy()
 
 if selected_epic:
     filtered_df = filtered_df[filtered_df["Epic Link"] == selected_epic]
-
 if selected_task:
     filtered_df = filtered_df[(filtered_df["Key"] == selected_task) | (filtered_df["Parent"] == selected_task)]
-
 if selected_subtask:
     filtered_df = filtered_df[filtered_df["Key"] == selected_subtask]
 
@@ -119,10 +109,30 @@ filtered_df = filtered_df[
     (filtered_df["Created"] <= pd.to_datetime(date_range[1]))
 ]
 
-# --- Tablolar ve grafikler ---
+# --- Seçilen Kayıtlar ---
 st.subheader("📋 Seçilen Kayıtlar")
 st.dataframe(filtered_df, use_container_width=True)
 
+# --- Subtask Detayı (görsel ve filtrelenebilir) ---
+if selected_task:
+    st.subheader(f"🧩 Subtask'lar: {selected_epic} > {selected_task}")
+    subtasks_of_task = df[df["Parent"] == selected_task]
+
+    if not subtasks_of_task.empty:
+        subtasks_of_task = subtasks_of_task[subtasks_of_task["Epic Link"] == selected_epic]
+        sub_statuses = st.multiselect("Subtask Statüsü", subtasks_of_task["Status"].unique(), default=list(subtasks_of_task["Status"].unique()))
+        sub_oncelik = st.multiselect("Subtask Önceliği", subtasks_of_task["Oncelik"].unique(), default=list(subtasks_of_task["Oncelik"].unique()))
+
+        filtered_subtasks = subtasks_of_task[
+            (subtasks_of_task["Status"].isin(sub_statuses)) &
+            (subtasks_of_task["Oncelik"].isin(sub_oncelik))
+        ]
+
+        st.dataframe(filtered_subtasks, use_container_width=True)
+    else:
+        st.info("Bu task’a bağlı subtask bulunamadı.")
+
+# --- Grafikler ---
 st.subheader("📊 Durum Dağılımı")
 st.bar_chart(filtered_df["Status"].value_counts())
 
@@ -134,7 +144,6 @@ st.bar_chart(filtered_df["Oncelik"].value_counts())
 
 # --- Epic Bazlı İlerleme ---
 st.subheader("📈 Epic Bazlı İlerleme Yüzdesi")
-
 epic_issues = df[df["Epic Link"].notna() & (df["Epic Link"] != "")]
 epic_summary = epic_issues.groupby("Epic Link").agg(
     total_issues=("Key", "count"),
