@@ -29,7 +29,7 @@ def fetch_issues(jql, max_results=1000):
         st.error(f"Hata: {response.status_code} - {response.text}")
         return {}
 
-# --- Uygulama başlığı ---
+# --- Başlık ve genel ayar ---
 st.set_page_config(page_title="Jira Vulnerability Dashboard", layout="wide")
 st.title("🔐 Vulnerability Management Dashboard")
 
@@ -60,15 +60,17 @@ else:
     st.warning("Hiçbir kayıt bulunamadı. Lütfen proje key'inizi ve filtreleri kontrol edin.")
     st.stop()
 
-# --- Filtreleme ---
+# --- Filtreleme paneli ---
 st.sidebar.header("🔎 Filtreleme")
 issue_types = st.sidebar.multiselect("Issue Type", df["Issue Type"].unique(), default=list(df["Issue Type"].unique()))
 status_filter = st.sidebar.multiselect("Status", df["Status"].unique(), default=list(df["Status"].unique()))
 oncelik_filter = st.sidebar.multiselect("Öncelik", df["Oncelik"].unique(), default=list(df["Oncelik"].unique()))
+show_only_subtasks = st.sidebar.checkbox("Sadece Subtask'ları Göster", value=False)
 
 min_date, max_date = df["Created"].min(), df["Created"].max()
 date_range = st.sidebar.date_input("Tarih Aralığı", (min_date, max_date))
 
+# --- Filtreleri uygula ---
 filtered_df = df[
     (df["Issue Type"].isin(issue_types)) &
     (df["Status"].isin(status_filter)) &
@@ -76,6 +78,10 @@ filtered_df = df[
     (df["Created"] >= pd.to_datetime(date_range[0])) &
     (df["Created"] <= pd.to_datetime(date_range[1]))
 ]
+
+# --- Subtask filtresi ---
+if show_only_subtasks:
+    filtered_df = filtered_df[filtered_df["Parent"] != ""]
 
 # --- Detaylı tablo ---
 st.subheader("📋 Detaylı Tablo")
@@ -91,7 +97,7 @@ st.bar_chart(filtered_df["Issue Type"].value_counts())
 st.subheader("📊 Öncelik Dağılımı")
 st.bar_chart(filtered_df["Oncelik"].value_counts())
 
-# --- Epic bazlı ilerleme yüzdesi (GÜNCELLENDİ) ---
+# --- Epic bazlı ilerleme yüzdesi ---
 st.subheader("📈 Epic Bazlı İlerleme Yüzdesi")
 epic_issues = filtered_df[filtered_df["Epic Link"] != ""]
 
@@ -100,7 +106,6 @@ epic_summary = epic_issues.groupby("Epic Link").agg(
     done_issues=("Status", lambda x: (x == "Done").sum())
 ).reset_index()
 
-# Sayısal dönüşüm ve sıfıra bölme koruması
 epic_summary["done_issues"] = pd.to_numeric(epic_summary["done_issues"], errors="coerce").fillna(0)
 epic_summary["total_issues"] = pd.to_numeric(epic_summary["total_issues"], errors="coerce").fillna(0)
 
@@ -112,12 +117,11 @@ epic_summary["Progress (%)"] = epic_summary.apply(
 st.dataframe(epic_summary, use_container_width=True)
 st.bar_chart(epic_summary.set_index("Epic Link")["Progress (%)"])
 
-# --- Excel dışa aktarım ---
+# --- Excel dışa aktarım (fixlenmiş) ---
 def convert_df_to_excel(df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df.to_excel(writer, index=False, sheet_name="JiraData")
-        writer.save()
     return output.getvalue()
 
 excel_data = convert_df_to_excel(filtered_df)
