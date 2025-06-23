@@ -5,7 +5,7 @@ from requests.auth import HTTPBasicAuth
 from datetime import datetime
 from io import BytesIO
 
-# --- Güvenli Jira API Erişimi (Streamlit Secrets üzerinden) ---
+# --- Streamlit Secrets üzerinden Jira erişimi ---
 EMAIL = st.secrets["JIRA_EMAIL"]
 API_TOKEN = st.secrets["JIRA_API_TOKEN"]
 DOMAIN = st.secrets["JIRA_DOMAIN"]
@@ -21,7 +21,6 @@ def fetch_issues(jql, max_results=1000):
         "jql": jql,
         "maxResults": max_results,
         "fields": "summary,status,issuetype,parent,created,customfield_10011,customfield_10043"
-        # customfield_10011 = Epic Link, customfield_10043 = Öncelik alanı olabilir (sende farklı olabilir)
     }
     response = requests.get(url, headers=headers, auth=auth, params=params)
     if response.status_code == 200:
@@ -30,12 +29,12 @@ def fetch_issues(jql, max_results=1000):
         st.error(f"Hata: {response.status_code} - {response.text}")
         return {}
 
-# --- Uygulama Başlat ---
+# --- Uygulama başlığı ---
 st.set_page_config(page_title="Jira Vulnerability Dashboard", layout="wide")
 st.title("🔐 Vulnerability Management Dashboard")
 
 with st.spinner("Jira'dan veri alınıyor..."):
-    data = fetch_issues('project = VM ORDER BY created DESC')  # ← doğru proje key burada
+    data = fetch_issues('project = VM ORDER BY created DESC')
 
 # --- Veri işleme ---
 issues = data.get("issues", [])
@@ -50,19 +49,18 @@ for issue in issues:
         "Parent": fields["parent"]["key"] if "parent" in fields else "",
         "Epic Link": fields.get("customfield_10011", ""),
         "Created": fields["created"][:10],
-        "Oncelik": fields.get("customfield_10043", "Bilinmiyor")  # field ID doğruysa çalışır
+        "Oncelik": fields.get("customfield_10043", "Bilinmiyor")
     })
 
 df = pd.DataFrame(rows)
 
-# --- Boş veri kontrolü ---
 if not df.empty:
     df["Created"] = pd.to_datetime(df["Created"])
 else:
     st.warning("Hiçbir kayıt bulunamadı. Lütfen proje key'inizi ve filtreleri kontrol edin.")
     st.stop()
 
-# --- Filtreleme Paneli ---
+# --- Filtreleme ---
 st.sidebar.header("🔎 Filtreleme")
 issue_types = st.sidebar.multiselect("Issue Type", df["Issue Type"].unique(), default=list(df["Issue Type"].unique()))
 status_filter = st.sidebar.multiselect("Status", df["Status"].unique(), default=list(df["Status"].unique()))
@@ -71,7 +69,6 @@ oncelik_filter = st.sidebar.multiselect("Öncelik", df["Oncelik"].unique(), defa
 min_date, max_date = df["Created"].min(), df["Created"].max()
 date_range = st.sidebar.date_input("Tarih Aralığı", (min_date, max_date))
 
-# --- Filtreleri uygula ---
 filtered_df = df[
     (df["Issue Type"].isin(issue_types)) &
     (df["Status"].isin(status_filter)) &
@@ -94,14 +91,24 @@ st.bar_chart(filtered_df["Issue Type"].value_counts())
 st.subheader("📊 Öncelik Dağılımı")
 st.bar_chart(filtered_df["Oncelik"].value_counts())
 
-# --- Epic bazlı ilerleme ---
+# --- Epic bazlı ilerleme yüzdesi (GÜNCELLENDİ) ---
 st.subheader("📈 Epic Bazlı İlerleme Yüzdesi")
 epic_issues = filtered_df[filtered_df["Epic Link"] != ""]
+
 epic_summary = epic_issues.groupby("Epic Link").agg(
     total_issues=("Key", "count"),
     done_issues=("Status", lambda x: (x == "Done").sum())
 ).reset_index()
-epic_summary["Progress (%)"] = round(100 * epic_summary["done_issues"] / epic_summary["total_issues"], 1)
+
+# Sayısal dönüşüm ve sıfıra bölme koruması
+epic_summary["done_issues"] = pd.to_numeric(epic_summary["done_issues"], errors="coerce").fillna(0)
+epic_summary["total_issues"] = pd.to_numeric(epic_summary["total_issues"], errors="coerce").fillna(0)
+
+epic_summary["Progress (%)"] = epic_summary.apply(
+    lambda row: round(100 * row["done_issues"] / row["total_issues"], 1) if row["total_issues"] > 0 else 0,
+    axis=1
+)
+
 st.dataframe(epic_summary, use_container_width=True)
 st.bar_chart(epic_summary.set_index("Epic Link")["Progress (%)"])
 
